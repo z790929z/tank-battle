@@ -174,7 +174,8 @@ const DIRS = [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: 0, y: 1 }, { x: -1, y: 0 }];
 const TOTAL_PER_LEVEL = 20;
 const MAX_ON_FIELD    = 5;
 
-const PLAYER_SPAWN = { c: 4, r: 14 };
+// 出生点放在基地上一行: 与基地错开一行, 避免开局朝右开炮直接打穿自家基地
+const PLAYER_SPAWN = { c: 4, r: 13 };
 const ENEMY_SPAWNS = [{ c: 0, r: 0 }, { c: 7, r: 0 }, { c: 15, r: 0 }];
 
 // 玩家火力等级: [同时子弹数, 子弹速度, 破钢能力]
@@ -436,6 +437,7 @@ const G = {
   spawnTimer: 0,
   freeze: 0,          // 冻结敌军计时
   shovel: 0,          // 基地钢铁化计时
+  baseAlive: true,
   shake: 0,
   time: 0,
 };
@@ -486,15 +488,21 @@ class Tank {
     if (rectHitsMap(nx, ny, TANK, TANK, solidForTank)) return true;
     for (const t of G.tanks) {
       if (t === this || !t.alive) continue;
-      if (t.spawnGuard > 0 && !this.isPlayer) continue;   // 敌军出生保护期不挡路
-      if (nx < t.x + TANK && nx + TANK > t.x && ny < t.y + TANK && ny + TANK > t.y) return true;
+      if (nx < t.x + TANK && nx + TANK > t.x && ny < t.y + TANK && ny + TANK > t.y) {
+        // 若当前位置已与该坦克重叠, 放行以便脱困, 避免互相卡死
+        if (this.x < t.x + TANK && this.x + TANK > t.x &&
+            this.y < t.y + TANK && this.y + TANK > t.y) continue;
+        return true;
+      }
     }
     return false;
   }
 
   /* ---- 移动 ---- */
   tryMove(dx, dy) {
-    const nx = this.x + dx, ny = this.y + dy;
+    // 夹紧到场地内, 避免亚像素越界导致贴图被裁切
+    const nx = Math.min(Math.max(this.x + dx, 0), W - TANK);
+    const ny = Math.min(Math.max(this.y + dy, 0), H - TANK);
     if (this.blockedAt(nx, ny)) return false;
     this.x = nx; this.y = ny;
     return true;
@@ -662,7 +670,8 @@ class Bullet {
           hitAny = true;
           if (this.power >= 2) { map[r][c] = T.EMPTY; }
         } else if (t === T.BASE) {
-          destroyBase();
+          // 自家炮弹被基地挡下但不破坏它, 只有敌军能摧毁基地
+          if (!this.owner.isPlayer) destroyBase();
           hitAny = true;
         }
       }
@@ -917,6 +926,7 @@ function startLevel(n) {
   G.enemiesLeft = TOTAL_PER_LEVEL + Math.floor(G.level * 2);
   G.spawnTimer = 40;
   G.freeze = 0; G.shovel = 0; G.shake = 0;
+  G.baseAlive = true;
 
   spawnPlayer(true);
   G.state = 'playing';
@@ -946,6 +956,7 @@ function destroyBase() {
   G.shake = 22;
   Sfx.bigBoom();
   for (const cell of baseCells) map[cell.r][cell.c] = T.EMPTY;
+  G.baseAlive = false;
   gameOver('基地被摧毁', '敌军攻破了你的基地。');
 }
 
@@ -1068,16 +1079,17 @@ function render() {
   ctx.fillRect(-20, -20, W + 40, H + 40);
   drawFieldBg();
 
-  // 地形 (树单独最后画)
-  for (let r = 0; r < ROWS; r++)
+  // 地形: 砖墙 / 钢板 / 河流 / 基地 (树单独最后画, 覆盖在坦克之上)
+  for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
       const t = map[r][c];
       const x = c * TILE, y = r * TILE;
       if (t === T.BRICK) drawBrick(x, y);
       else if (t === T.STEEL) drawSteel(x, y);
       else if (t === T.WATER) drawWater(x, y);
-      else if (t === T.BASE) drawBase(x, y);
     }
+  }
+  drawBaseEmblem();
 
   // 出生点闪烁
   for (const s of G.spawners) drawSpawnFlash(s);
@@ -1172,28 +1184,78 @@ function drawTree(x, y) {
   }
 }
 
-function drawBase(x, y) {
-  const cx = x + TILE / 2, cy = y + TILE / 2;
-  ctx.fillStyle = '#2a2f3d';
-  ctx.fillRect(x + 1, y + 1, TILE - 2, TILE - 2);
-  // 鹰形
-  ctx.fillStyle = '#d9a520';
+// 基地按整块 2x2 绘制一只雄鹰 (逐格画会变成四只小箭头)
+function drawBaseEmblem() {
+  if (!G.baseAlive || !baseCells.length) {
+    // 基地已被摧毁: 画一片废墟
+    for (const b of baseCells) {
+      const x = b.c * TILE, y = b.r * TILE;
+      ctx.fillStyle = '#1a1d26';
+      ctx.fillRect(x, y, TILE, TILE);
+      ctx.fillStyle = '#2e3340';
+      for (let i = 0; i < 5; i++) {
+        const px = x + 4 + ((i * 9) % 22), py = y + 6 + ((i * 13) % 20);
+        ctx.fillRect(px, py, 5, 4);
+      }
+    }
+    return;
+  }
+
+  let c0 = COLS, c1 = -1, r0 = ROWS, r1 = -1;
+  for (const b of baseCells) {
+    c0 = Math.min(c0, b.c); c1 = Math.max(c1, b.c);
+    r0 = Math.min(r0, b.r); r1 = Math.max(r1, b.r);
+  }
+  const x = c0 * TILE, y = r0 * TILE;
+  const w = (c1 - c0 + 1) * TILE, h = (r1 - r0 + 1) * TILE;
+  const cx = x + w / 2, cy = y + h / 2;
+
+  // 底座
+  ctx.fillStyle = '#1c2029';
+  ctx.fillRect(x + 2, y + 2, w - 4, h - 4);
+  ctx.strokeStyle = '#3a4152';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x + 3, y + 3, w - 6, h - 6);
+
+  // 呼吸光晕
+  const glow = 0.35 + Math.sin(G.time * 0.06) * 0.15;
+  ctx.save();
+  ctx.shadowColor = 'rgba(255,196,60,' + glow + ')';
+  ctx.shadowBlur = 16;
+
+  // 双翼 + 身体
+  ctx.fillStyle = '#e8b32b';
   ctx.beginPath();
-  ctx.moveTo(cx, cy - 11);
-  ctx.lineTo(cx + 12, cy + 2);
-  ctx.lineTo(cx + 5, cy + 2);
-  ctx.lineTo(cx + 5, cy + 10);
-  ctx.lineTo(cx - 5, cy + 10);
-  ctx.lineTo(cx - 5, cy + 2);
-  ctx.lineTo(cx - 12, cy + 2);
+  ctx.moveTo(cx, cy - h * 0.10);
+  ctx.lineTo(cx - w * 0.44, cy - h * 0.26);
+  ctx.lineTo(cx - w * 0.32, cy + h * 0.10);
+  ctx.lineTo(cx, cy + h * 0.24);
+  ctx.lineTo(cx + w * 0.32, cy + h * 0.10);
+  ctx.lineTo(cx + w * 0.44, cy - h * 0.26);
   ctx.closePath();
   ctx.fill();
-  ctx.fillStyle = '#ffe9a8';
-  ctx.beginPath(); ctx.arc(cx, cy - 5, 3, 0, Math.PI * 2); ctx.fill();
-  if (Math.floor(G.time / 26) % 2 === 0) {
-    ctx.strokeStyle = 'rgba(255,210,63,.35)';
-    ctx.lineWidth = 2;
-    ctx.strokeRect(x + 1.5, y + 1.5, TILE - 3, TILE - 3);
+
+  // 头部
+  ctx.fillStyle = '#ffd964';
+  ctx.beginPath();
+  ctx.arc(cx, cy - h * 0.26, w * 0.11, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+
+  // 尾羽
+  ctx.fillStyle = '#a8801a';
+  ctx.fillRect(cx - w * 0.16, cy + h * 0.24, w * 0.32, h * 0.10);
+
+  // 受击预警: 基地周围砖墙被打光时闪烁提示
+  let exposed = 0;
+  for (const b of baseCells) {
+    if (tileAt(b.c - 1, b.r) !== T.BRICK && tileAt(b.c + 1, b.r) !== T.BRICK &&
+        tileAt(b.c, b.r - 1) !== T.BRICK) exposed++;
+  }
+  if (exposed > 0 && Math.floor(G.time / 18) % 2 === 0) {
+    ctx.strokeStyle = 'rgba(232,86,74,.75)';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x + 2, y + 2, w - 4, h - 4);
   }
 }
 

@@ -6,7 +6,11 @@
 
 ## 在线试玩
 
-开启 GitHub Pages 后即可在线游玩：`https://<你的用户名>.github.io/<仓库名>/`
+仓库地址：<https://github.com/z790929z/tank-battle>
+
+开启 GitHub Pages 后即可直接在线游玩：<https://z790929z.github.io/tank-battle/>
+
+> 开启方法：仓库 **Settings → Pages → Source** 选 `Deploy from a branch`，分支选 `main`、目录选 `/ (root)`，保存后等约 1 分钟即可访问上面的链接。
 
 ## 玩法
 
